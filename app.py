@@ -2,10 +2,13 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.express as px
+import numpy as np
 
-# Configuração da página
-st.set_page_config(page_title="Minha Carteira de FIIs", layout="wide")
-st.title("📊 Controle e Projeção de FIIs")
+# ==========================
+# CONFIGURAÇÃO DA PÁGINA
+# ==========================
+st.set_page_config(page_title="A Minha Carteira de FIIs", layout="wide")
+st.title("📊 Controlo e Projeção de FIIs")
 
 # Inicializar a carteira na sessão
 if 'carteira' not in st.session_state:
@@ -19,12 +22,11 @@ st.sidebar.markdown("*(Exemplo: MXRF11, HGLG11)*")
 
 ticker_input = st.sidebar.text_input("Código do FII").upper()
 qtd_input = st.sidebar.number_input("Quantidade", min_value=1, step=1)
-# O Preço Médio continua sendo necessário para você saber se está no lucro ou prejuízo
-pm_input = st.sidebar.number_input("Seu Preço Médio (R$)", min_value=0.00, step=0.01)
+st.sidebar.markdown("*(Deixe 0 se quiser usar o Preço Atual de mercado como Preço Médio)*")
+pm_input = st.sidebar.number_input("O seu Preço Médio (R$)", min_value=0.00, step=0.01, value=0.00)
 
 if st.sidebar.button("Adicionar FII"):
     if ticker_input:
-        # Verifica se o ativo já existe na carteira para não duplicar, mas sim somar (Opcional, aqui adiciona nova linha)
         novo_ativo = pd.DataFrame({
             "Ativo": [ticker_input], 
             "Quantidade": [qtd_input], 
@@ -33,7 +35,7 @@ if st.sidebar.button("Adicionar FII"):
         st.session_state.carteira = pd.concat([st.session_state.carteira, novo_ativo], ignore_index=True)
         st.sidebar.success(f"{ticker_input} adicionado com sucesso!")
     else:
-        st.sidebar.error("Por favor, insira o código do FII.")
+        st.sidebar.error("Por favor, introduza o código do FII.")
 
 if st.sidebar.button("Limpar Carteira"):
     st.session_state.carteira = pd.DataFrame(columns=["Ativo", "Quantidade", "Preco Medio"])
@@ -42,11 +44,12 @@ if st.sidebar.button("Limpar Carteira"):
 # ==========================
 # LÓGICA DE BUSCA (PREÇO E DIVIDENDO)
 # ==========================
-@st.cache_data(ttl=3600) # Atualiza a cada 1 hora
+@st.cache_data(ttl=3600) # Atualiza a cada 1 hora para não sobrecarregar
 def buscar_dados_mercado(tickers):
     dados = {}
     for t in tickers:
         try:
+            # O yfinance exige o sufixo .SA para ativos da bolsa brasileira
             ticker_sa = f"{t}.SA"
             ativo = yf.Ticker(ticker_sa)
             
@@ -57,7 +60,6 @@ def buscar_dados_mercado(tickers):
             # Buscar Último Dividendo Pago
             divs = ativo.dividends
             if not divs.empty:
-                # Pega o último registro de dividendo
                 ultimo_div = divs.iloc[-1]
             else:
                 ultimo_div = 0.0
@@ -71,9 +73,9 @@ def buscar_dados_mercado(tickers):
     return dados
 
 # ==========================
-# CORPO PRINCIPAL (ABAS)
+# CORPO PRINCIPAL (SEPARADORES)
 # ==========================
-aba_carteira, aba_projecao = st.tabs(["💼 Minha Carteira", "🚀 Projeção de Rendimentos"])
+aba_carteira, aba_projecao = st.tabs(["💼 A Minha Carteira", "🚀 Projeção de Rendimentos"])
 
 with aba_carteira:
     if not st.session_state.carteira.empty:
@@ -83,19 +85,32 @@ with aba_carteira:
         tickers_unicos = df['Ativo'].unique()
         dados_mercado = buscar_dados_mercado(tickers_unicos)
         
-        # Aplicar os dados buscados na tabela
+        # Aplicar os dados procurados na tabela
         df['Preco Atual'] = df['Ativo'].apply(lambda x: dados_mercado[x]['Preco Atual'])
         df['Último Div. (R$)'] = df['Ativo'].apply(lambda x: dados_mercado[x]['Ultimo Dividendo'])
         
-        # Novos Cálculos
+        # AJUSTE AUTOMÁTICO: Se o Preço Médio inserido for 0, assume o Preço Atual de mercado
+        df['Preco Medio'] = np.where(df['Preco Medio'] == 0, df['Preco Atual'], df['Preco Medio'])
+        
+        # Novos Cálculos com proteção contra divisão por zero
         df['Custo Total'] = df['Quantidade'] * df['Preco Medio']
         df['Valor Atual'] = df['Quantidade'] * df['Preco Atual']
         df['Lucro/Prej (R$)'] = df['Valor Atual'] - df['Custo Total']
-        df['Lucro/Prej (%)'] = ((df['Valor Atual'] / df['Custo Total']) - 1) * 100
+        
+        df['Lucro/Prej (%)'] = np.where(
+            df['Custo Total'] > 0, 
+            ((df['Valor Atual'] / df['Custo Total']) - 1) * 100, 
+            0.0
+        )
         
         # Cálculo de Renda com base no último dividendo
         df['Renda Estimada (R$)'] = df['Quantidade'] * df['Último Div. (R$)']
-        df['Dividend Yield Mensal (%)'] = (df['Último Div. (R$)'] / df['Preco Atual']) * 100
+        
+        df['Dividend Yield Mensal (%)'] = np.where(
+            df['Preco Atual'] > 0, 
+            (df['Último Div. (R$)'] / df['Preco Atual']) * 100, 
+            0.0
+        )
         
         # Exibição de Métricas Gerais
         total_investido = df['Custo Total'].sum()
@@ -103,15 +118,15 @@ with aba_carteira:
         renda_mensal_total = df['Renda Estimada (R$)'].sum()
         
         col1, col2, col3 = st.columns(3)
-        col1.metric("Patrimônio Atual", f"R$ {patrimonio_atual:,.2f}", f"Custo: R$ {total_investido:,.2f}")
+        col1.metric("Património Atual", f"R$ {patrimonio_atual:,.2f}", f"Custo: R$ {total_investido:,.2f}")
         col2.metric("Renda Mensal Estimada", f"R$ {renda_mensal_total:,.2f}")
         col3.metric("Yield Médio Mensal da Carteira", f"{(renda_mensal_total / patrimonio_atual * 100) if patrimonio_atual > 0 else 0:.2f}%")
         
-        # Reordenar colunas para ficar mais bonito
+        # Reordenar colunas para ficar visualmente melhor
         cols_order = ['Ativo', 'Quantidade', 'Preco Medio', 'Preco Atual', 'Último Div. (R$)', 'Dividend Yield Mensal (%)', 'Custo Total', 'Valor Atual', 'Lucro/Prej (R$)', 'Lucro/Prej (%)', 'Renda Estimada (R$)']
         df = df[cols_order]
 
-        # Formatando a tabela
+        # Formatar a tabela para exibição
         df_display = df.style.format({
             "Preco Medio": "R$ {:.2f}",
             "Preco Atual": "R$ {:.2f}",
@@ -126,10 +141,10 @@ with aba_carteira:
         
         st.dataframe(df_display, use_container_width=True)
         
-        # Gráficos
+        # Gráficos de análise
         col_g1, col_g2 = st.columns(2)
         with col_g1:
-            st.subheader("Composição por Patrimônio")
+            st.subheader("Composição por Património")
             fig1 = px.pie(df, values='Valor Atual', names='Ativo', hole=0.4)
             st.plotly_chart(fig1, use_container_width=True)
         
@@ -139,13 +154,13 @@ with aba_carteira:
             st.plotly_chart(fig2, use_container_width=True)
             
     else:
-        st.info("Sua carteira está vazia. Adicione ativos na barra lateral.")
+        st.info("A sua carteira está vazia. Adicione ativos na barra lateral.")
 
 with aba_projecao:
     st.header("Simulador de Bola de Neve (Juros Compostos)")
     st.markdown("Projete o crescimento baseado no reinvestimento dos dividendos.")
     
-    # Pega o Yield médio real da carteira se houver, se não usa 0.8% como padrão
+    # Capta o Yield médio real da carteira se houver, se não usa 0.8% como padrão
     yield_padrao = (renda_mensal_total / patrimonio_atual * 100) if not st.session_state.carteira.empty and patrimonio_atual > 0 else 0.8
     
     col_p1, col_p2, col_p3 = st.columns(3)
@@ -168,13 +183,13 @@ with aba_projecao:
         if mes % 12 == 0 or mes == meses:
             historico_projecao.append({
                 "Ano": mes // 12,
-                "Patrimônio (R$)": patrimonio_acumulado,
+                "Património (R$)": patrimonio_acumulado,
                 "Renda Mensal no Ano (R$)": rendimento
             })
             
     df_projecao = pd.DataFrame(historico_projecao)
     
-    st.success(f"Em {anos} anos, seu patrimônio estimado será de **R$ {patrimonio_acumulado:,.2f}**, gerando uma renda mensal de **R$ {rendimento:,.2f}**.")
+    st.success(f"Em {anos} anos, o seu património estimado será de **R$ {patrimonio_acumulado:,.2f}**, gerando uma renda mensal de **R$ {rendimento:,.2f}**.")
     
-    fig_proj = px.bar(df_projecao, x="Ano", y="Patrimônio (R$)", title="Evolução do Patrimônio")
+    fig_proj = px.bar(df_projecao, x="Ano", y="Património (R$)", title="Evolução do Património")
     st.plotly_chart(fig_proj, use_container_width=True)
