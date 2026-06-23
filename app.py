@@ -3,6 +3,8 @@ import pandas as pd
 import yfinance as yf
 import plotly.express as px
 import numpy as np
+from github import Github
+import io
 
 # ==========================
 # CONFIGURAÇÃO DA PÁGINA
@@ -10,17 +12,67 @@ import numpy as np
 st.set_page_config(page_title="A Minha Carteira de FIIs", layout="wide")
 st.title("📊 Controlo e Projeção de FIIs")
 
-# Inicializar a carteira na sessão
-if 'carteira' not in st.session_state:
-    st.session_state.carteira = pd.DataFrame(columns=["Ativo", "Quantidade", "Preco Medio"])
+# ==========================
+# INTEGRAÇÃO COM O GITHUB (LEITURA E ESCRITA)
+# ==========================
+ARQUIVO_DADOS = "carteira.csv"
+
+def carregar_carteira_github():
+    """Lê o ficheiro CSV diretamente do repositório do GitHub."""
+    try:
+        g = Github(st.secrets["GITHUB_TOKEN"])
+        repo = g.get_repo(st.secrets["GITHUB_REPO"])
+        file_content = repo.get_contents(ARQUIVO_DADOS)
+        
+        # O GitHub devolve o ficheiro em base64, precisamos descodificar
+        csv_data = file_content.decoded_content.decode('utf-8')
+        return pd.read_csv(io.StringIO(csv_data))
+    except Exception as e:
+        # Se der erro (ex: o ficheiro não existe ainda), cria um vazio
+        return pd.DataFrame(columns=["Ativo", "Quantidade", "Preco Medio"])
+
+def salvar_carteira_github(df):
+    """Guarda ou atualiza o DataFrame no ficheiro CSV no GitHub."""
+    try:
+        g = Github(st.secrets["GITHUB_TOKEN"])
+        repo = g.get_repo(st.secrets["GITHUB_REPO"])
+        
+        # Converte o DataFrame para formato de texto CSV
+        csv_data = df.to_csv(index=False)
+        
+        try:
+            # Tenta encontrar o ficheiro para o atualizar (precisa do 'sha' do ficheiro atual)
+            file = repo.get_contents(ARQUIVO_DADOS)
+            repo.update_file(
+                path=ARQUIVO_DADOS,
+                message="Atualizando carteira via Streamlit App",
+                content=csv_data,
+                sha=file.sha
+            )
+        except:
+            # Se o ficheiro não existir no GitHub, cria um novo
+            repo.create_file(
+                path=ARQUIVO_DADOS,
+                message="Criando ficheiro de carteira via Streamlit App",
+                content=csv_data
+            )
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar no GitHub: {e}")
+        return False
 
 # ==========================
-# BARRA LATERAL (INSERÇÃO)
+# INICIALIZAÇÃO DA SESSÃO
+# ==========================
+if 'carteira' not in st.session_state:
+    with st.spinner("A carregar dados do GitHub..."):
+        st.session_state.carteira = carregar_carteira_github()
+
+# ==========================
+# BARRA LATERAL (INSERÇÃO E REMOÇÃO)
 # ==========================
 st.sidebar.header("Adicionar Novo FII")
-st.sidebar.markdown("*(Exemplo: MXRF11, HGLG11)*")
-
-ticker_input = st.sidebar.text_input("Código do FII").upper()
+ticker_input = st.sidebar.text_input("Código do FII (ex: MXRF11)").upper()
 qtd_input = st.sidebar.number_input("Quantidade", min_value=1, step=1)
 st.sidebar.markdown("*(Deixe 0 se quiser usar o Preço Atual de mercado como Preço Médio)*")
 pm_input = st.sidebar.number_input("O seu Preço Médio (R$)", min_value=0.00, step=0.01, value=0.00)
@@ -33,41 +85,53 @@ if st.sidebar.button("Adicionar FII"):
             "Preco Medio": [pm_input]
         })
         st.session_state.carteira = pd.concat([st.session_state.carteira, novo_ativo], ignore_index=True)
-        st.sidebar.success(f"{ticker_input} adicionado com sucesso!")
+        
+        with st.spinner("A gravar no GitHub..."):
+            salvar_carteira_github(st.session_state.carteira)
+            
+        st.sidebar.success(f"{ticker_input} adicionado!")
+        st.rerun() # Atualiza a página imediatamente
     else:
         st.sidebar.error("Por favor, introduza o código do FII.")
 
-if st.sidebar.button("Limpar Carteira"):
+st.sidebar.markdown("---")
+st.sidebar.header("Remover FII")
+if not st.session_state.carteira.empty:
+    opcoes_ativos = st.session_state.carteira["Ativo"].unique().tolist()
+    ativo_remover = st.sidebar.selectbox("Selecione o FII", opcoes_ativos)
+    
+    if st.sidebar.button("Remover Ativo"):
+        # Mantém na carteira apenas os ativos diferentes do selecionado
+        st.session_state.carteira = st.session_state.carteira[st.session_state.carteira["Ativo"] != ativo_remover]
+        
+        with st.spinner("A apagar do GitHub..."):
+            salvar_carteira_github(st.session_state.carteira)
+            
+        st.sidebar.warning(f"{ativo_remover} removido da carteira!")
+        st.rerun()
+
+st.sidebar.markdown("---")
+if st.sidebar.button("Limpar Toda a Carteira"):
     st.session_state.carteira = pd.DataFrame(columns=["Ativo", "Quantidade", "Preco Medio"])
-    st.sidebar.warning("Carteira zerada!")
+    with st.spinner("A apagar ficheiro no GitHub..."):
+        salvar_carteira_github(st.session_state.carteira)
+    st.rerun()
 
 # ==========================
 # LÓGICA DE BUSCA (PREÇO E DIVIDENDO)
 # ==========================
-@st.cache_data(ttl=3600) # Atualiza a cada 1 hora para não sobrecarregar
+@st.cache_data(ttl=3600)
 def buscar_dados_mercado(tickers):
     dados = {}
     for t in tickers:
         try:
-            # O yfinance exige o sufixo .SA para ativos da bolsa brasileira
             ticker_sa = f"{t}.SA"
             ativo = yf.Ticker(ticker_sa)
-            
-            # Buscar Preço Atual
             hist = ativo.history(period="1d")
             preco_atual = hist['Close'].iloc[-1] if not hist.empty else 0.0
-            
-            # Buscar Último Dividendo Pago
             divs = ativo.dividends
-            if not divs.empty:
-                ultimo_div = divs.iloc[-1]
-            else:
-                ultimo_div = 0.0
-                
-            dados[t] = {
-                "Preco Atual": preco_atual,
-                "Ultimo Dividendo": ultimo_div
-            }
+            ultimo_div = divs.iloc[-1] if not divs.empty else 0.0
+            dados[t] = {"Preco Atual": preco_atual, "Ultimo Dividendo": ultimo_div}
         except:
             dados[t] = {"Preco Atual": 0.0, "Ultimo Dividendo": 0.0}
     return dados
@@ -81,34 +145,24 @@ with aba_carteira:
     if not st.session_state.carteira.empty:
         df = st.session_state.carteira.copy()
         
-        # Buscar dados de mercado atuais
         tickers_unicos = df['Ativo'].unique()
         dados_mercado = buscar_dados_mercado(tickers_unicos)
         
-        # Aplicar os dados procurados na tabela
         df['Preco Atual'] = df['Ativo'].apply(lambda x: dados_mercado[x]['Preco Atual'])
         df['Último Div. (R$)'] = df['Ativo'].apply(lambda x: dados_mercado[x]['Ultimo Dividendo'])
-        
-        # AJUSTE AUTOMÁTICO: Se o Preço Médio inserido for 0, assume o Preço Atual de mercado
         df['Preco Medio'] = np.where(df['Preco Medio'] == 0, df['Preco Atual'], df['Preco Medio'])
         
-        # Novos Cálculos com proteção REAL contra divisão por zero
         df['Custo Total'] = df['Quantidade'] * df['Preco Medio']
         df['Valor Atual'] = df['Quantidade'] * df['Preco Atual']
         df['Lucro/Prej (R$)'] = df['Valor Atual'] - df['Custo Total']
         
-        # Substitui 0 por NaN no Custo Total para evitar o erro, faz a conta, e preenche com 0
         df['Lucro/Prej (%)'] = ((df['Valor Atual'] / df['Custo Total'].replace(0, np.nan)) - 1) * 100
         df['Lucro/Prej (%)'] = df['Lucro/Prej (%)'].fillna(0.0)
         
-        # Cálculo de Renda com base no último dividendo
         df['Renda Estimada (R$)'] = df['Quantidade'] * df['Último Div. (R$)']
-        
-        # O mesmo processo para evitar divisão por zero se o Preço Atual falhar
         df['Dividend Yield Mensal (%)'] = (df['Último Div. (R$)'] / df['Preco Atual'].replace(0, np.nan)) * 100
         df['Dividend Yield Mensal (%)'] = df['Dividend Yield Mensal (%)'].fillna(0.0)
         
-        # Exibição de Métricas Gerais
         total_investido = df['Custo Total'].sum()
         patrimonio_atual = df['Valor Atual'].sum()
         renda_mensal_total = df['Renda Estimada (R$)'].sum()
@@ -118,11 +172,9 @@ with aba_carteira:
         col2.metric("Renda Mensal Estimada", f"R$ {renda_mensal_total:,.2f}")
         col3.metric("Yield Médio Mensal da Carteira", f"{(renda_mensal_total / patrimonio_atual * 100) if patrimonio_atual > 0 else 0:.2f}%")
         
-        # Reordenar colunas para ficar visualmente melhor
         cols_order = ['Ativo', 'Quantidade', 'Preco Medio', 'Preco Atual', 'Último Div. (R$)', 'Dividend Yield Mensal (%)', 'Custo Total', 'Valor Atual', 'Lucro/Prej (R$)', 'Lucro/Prej (%)', 'Renda Estimada (R$)']
         df = df[cols_order]
 
-        # Formatar a tabela para exibição
         df_display = df.style.format({
             "Preco Medio": "R$ {:.2f}",
             "Preco Atual": "R$ {:.2f}",
@@ -137,7 +189,6 @@ with aba_carteira:
         
         st.dataframe(df_display, use_container_width=True)
         
-        # Gráficos de análise
         col_g1, col_g2 = st.columns(2)
         with col_g1:
             st.subheader("Composição por Património")
@@ -156,7 +207,6 @@ with aba_projecao:
     st.header("Simulador de Bola de Neve (Juros Compostos)")
     st.markdown("Projete o crescimento baseado no reinvestimento dos dividendos.")
     
-    # Capta o Yield médio real da carteira se houver, se não usa 0.8% como padrão
     yield_padrao = (renda_mensal_total / patrimonio_atual * 100) if not st.session_state.carteira.empty and patrimonio_atual > 0 else 0.8
     
     col_p1, col_p2, col_p3 = st.columns(3)
@@ -169,7 +219,6 @@ with aba_projecao:
     
     meses = anos * 12
     historico_projecao = []
-    
     patrimonio_acumulado = patrimonio_inicial
     
     for mes in range(1, meses + 1):
