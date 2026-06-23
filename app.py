@@ -92,25 +92,21 @@ with aba_carteira:
         # AJUSTE AUTOMÁTICO: Se o Preço Médio inserido for 0, assume o Preço Atual de mercado
         df['Preco Medio'] = np.where(df['Preco Medio'] == 0, df['Preco Atual'], df['Preco Medio'])
         
-        # Novos Cálculos com proteção contra divisão por zero
+        # Novos Cálculos com proteção REAL contra divisão por zero
         df['Custo Total'] = df['Quantidade'] * df['Preco Medio']
         df['Valor Atual'] = df['Quantidade'] * df['Preco Atual']
         df['Lucro/Prej (R$)'] = df['Valor Atual'] - df['Custo Total']
         
-        df['Lucro/Prej (%)'] = np.where(
-            df['Custo Total'] > 0, 
-            ((df['Valor Atual'] / df['Custo Total']) - 1) * 100, 
-            0.0
-        )
+        # Substitui 0 por NaN no Custo Total para evitar o erro, faz a conta, e preenche com 0
+        df['Lucro/Prej (%)'] = ((df['Valor Atual'] / df['Custo Total'].replace(0, np.nan)) - 1) * 100
+        df['Lucro/Prej (%)'] = df['Lucro/Prej (%)'].fillna(0.0)
         
         # Cálculo de Renda com base no último dividendo
         df['Renda Estimada (R$)'] = df['Quantidade'] * df['Último Div. (R$)']
         
-        df['Dividend Yield Mensal (%)'] = np.where(
-            df['Preco Atual'] > 0, 
-            (df['Último Div. (R$)'] / df['Preco Atual']) * 100, 
-            0.0
-        )
+        # O mesmo processo para evitar divisão por zero se o Preço Atual falhar
+        df['Dividend Yield Mensal (%)'] = (df['Último Div. (R$)'] / df['Preco Atual'].replace(0, np.nan)) * 100
+        df['Dividend Yield Mensal (%)'] = df['Dividend Yield Mensal (%)'].fillna(0.0)
         
         # Exibição de Métricas Gerais
         total_investido = df['Custo Total'].sum()
