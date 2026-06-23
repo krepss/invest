@@ -45,7 +45,7 @@ def salvar_carteira_github(df):
             file = repo.get_contents(ARQUIVO_DADOS)
             repo.update_file(
                 path=ARQUIVO_DADOS,
-                message="Atualizando carteira via Streamlit App",
+                message="A atualizar carteira via Streamlit App",
                 content=csv_data,
                 sha=file.sha
             )
@@ -53,12 +53,12 @@ def salvar_carteira_github(df):
             # Se o ficheiro não existir no GitHub, cria um novo
             repo.create_file(
                 path=ARQUIVO_DADOS,
-                message="Criando ficheiro de carteira via Streamlit App",
+                message="A criar ficheiro de carteira via Streamlit App",
                 content=csv_data
             )
         return True
     except Exception as e:
-        st.error(f"Erro ao salvar no GitHub: {e}")
+        st.error(f"Erro ao guardar no GitHub: {e}")
         return False
 
 # ==========================
@@ -79,17 +79,30 @@ pm_input = st.sidebar.number_input("O seu Preço Médio (R$)", min_value=0.00, s
 
 if st.sidebar.button("Adicionar FII"):
     if ticker_input:
+        pm_final = pm_input
+        
+        # AUTOMAÇÃO NA HORA DE GUARDAR: Se o preço médio digitado for 0, procura o preço real agora!
+        if pm_final == 0:
+            with st.spinner(f"A procurar preço atual de {ticker_input}..."):
+                try:
+                    ativo_sa = yf.Ticker(f"{ticker_input}.SA")
+                    hist = ativo_sa.history(period="1d")
+                    if not hist.empty:
+                        pm_final = float(hist['Close'].iloc[-1])
+                except:
+                    st.sidebar.warning("Não foi possível obter o preço agora. Ficará a zero.")
+
         novo_ativo = pd.DataFrame({
             "Ativo": [ticker_input], 
             "Quantidade": [qtd_input], 
-            "Preco Medio": [pm_input]
+            "Preco Medio": [pm_final]
         })
         st.session_state.carteira = pd.concat([st.session_state.carteira, novo_ativo], ignore_index=True)
         
         with st.spinner("A gravar no GitHub..."):
             salvar_carteira_github(st.session_state.carteira)
             
-        st.sidebar.success(f"{ticker_input} adicionado!")
+        st.sidebar.success(f"{ticker_input} adicionado com Preço Médio de R$ {pm_final:.2f}!")
         st.rerun() # Atualiza a página imediatamente
     else:
         st.sidebar.error("Por favor, introduza o código do FII.")
@@ -150,6 +163,8 @@ with aba_carteira:
         
         df['Preco Atual'] = df['Ativo'].apply(lambda x: dados_mercado[x]['Preco Atual'])
         df['Último Div. (R$)'] = df['Ativo'].apply(lambda x: dados_mercado[x]['Ultimo Dividendo'])
+        
+        # Mantido por precaução caso haja dados antigos a 0 no CSV
         df['Preco Medio'] = np.where(df['Preco Medio'] == 0, df['Preco Atual'], df['Preco Medio'])
         
         df['Custo Total'] = df['Quantidade'] * df['Preco Medio']
