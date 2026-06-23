@@ -58,7 +58,7 @@ def salvar_carteira_github(df):
             )
         return True
     except Exception as e:
-        st.error(f"Erro ao guardar no GitHub: {e}")
+        st.error(f"Erro detalhado do GitHub: {str(e)}")
         return False
 
 # ==========================
@@ -158,13 +158,13 @@ with aba_carteira:
     if not st.session_state.carteira.empty:
         df = st.session_state.carteira.copy()
         
-        tickers_unicos = df['Ativo'].unique()
+        # CORREÇÃO: Transformar em tuple para o Streamlit conseguir fazer cache sem erros!
+        tickers_unicos = tuple(df['Ativo'].unique())
         dados_mercado = buscar_dados_mercado(tickers_unicos)
         
         df['Preco Atual'] = df['Ativo'].apply(lambda x: dados_mercado[x]['Preco Atual'])
         df['Último Div. (R$)'] = df['Ativo'].apply(lambda x: dados_mercado[x]['Ultimo Dividendo'])
         
-        # Mantido por precaução caso haja dados antigos a 0 no CSV
         df['Preco Medio'] = np.where(df['Preco Medio'] == 0, df['Preco Atual'], df['Preco Medio'])
         
         df['Custo Total'] = df['Quantidade'] * df['Preco Medio']
